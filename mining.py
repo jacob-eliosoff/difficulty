@@ -425,7 +425,7 @@ def next_bits_aserti(msg, tau, mode=1, mo3=False):
         target += (target * factor) >> rbits
     return target_to_bits(target)
 
-def next_bits_grasberg(msg, nblocks, genesis_time=1231006505, correct_drift=True):
+def next_bits_grasberg(msg, nblocks, genesis_time=1231006505, correct_drift=True, clip=True):
     LN2_32 = 2977044472
     POW2_32 = 1 << 32
     def deterministicExp2(n):
@@ -526,21 +526,25 @@ def next_bits_grasberg(msg, nblocks, genesis_time=1231006505, correct_drift=True
 
         return u0 + ((u1_31 + u2_31) >> 31);
 
-    def computeTargetBlockTime(states, genesis_time):
+    def computeTargetBlockTime(states, genesis_time, clip):
         lastBlockTime = states[-1].timestamp                        # apparently this one is the nTime, not the solvetime
         expectedTime = states[-1].height * IDEAL_BLOCK_TIME + genesis_time
         drift = expectedTime - lastBlockTime;
-        tau = 14 * 24 * 60 * 60 # this is different from the ASERT tau, but shares the same name
+        if clip:
+            # We clip to ensure block time stay around 10 minutes in practice.
+            tau = 14 * 24 * 60 * 60 # this is different from the ASERT tau, but shares the same name
+            X_CLIP = 729822324 # 2^32 * ln2(675/600) = 729822323.967
+        else:
+            # No clipping, and therefore much larger tau (ie, more gradual drift correction).
+            tau = 129500000 # example value, chosen to make drift correction initially (July 2020) increase block times by 12.5%
+            X_CLIP = math.inf
         x32 = int((drift * POW2_32) / tau)
-        # 2^32 * ln2(675/600) = 729822323.967
-        X_CLIP = 729822324
-        # We clip to ensure block time stay around 10 minutes in practice.
         x = max(min(x32, X_CLIP), -X_CLIP)
         offsetTime32 = IDEAL_BLOCK_TIME * deterministicExp2(x)
         return (IDEAL_BLOCK_TIME + (offsetTime32 >> 32)) >> (x32 < 0)
 
-    def ComputeNextWork(states, nblocks, genesis_time, correct_drift):
-        targetBlockTime = computeTargetBlockTime(states, genesis_time) if correct_drift else IDEAL_BLOCK_TIME
+    def ComputeNextWork(states, nblocks, genesis_time, correct_drift, clip):
+        targetBlockTime = computeTargetBlockTime(states, genesis_time, clip) if correct_drift else IDEAL_BLOCK_TIME
         lastBlockTime = states[-1].timestamp - states[-2].timestamp # apparently this one is the solvetime, not the nTime
         timeOffset = targetBlockTime - lastBlockTime
         tau32 = nblocks * IDEAL_BLOCK_TIME * LN2_32
@@ -563,7 +567,7 @@ def next_bits_grasberg(msg, nblocks, genesis_time=1231006505, correct_drift=True
         # 2^256 - W as the complement of W.
         return (2**256-work)//work
 
-    nextWork = ComputeNextWork(states, nblocks, genesis_time, correct_drift)
+    nextWork = ComputeNextWork(states, nblocks, genesis_time, correct_drift, clip)
     nextTarget = ComputeTargetFromWork(nextWork)
     powLimit = 1<<224
     if nextTarget > powLimit: return target_to_bits(powLimit)
@@ -1127,7 +1131,10 @@ Algos = {
     }),
     'grasberg-nodrift-576' : Algo(next_bits_grasberg, {
         'nblocks': 576, 'correct_drift': False,
-    })
+    }),
+    'grasberg-noclip-288' : Algo(next_bits_grasberg, {
+        'nblocks': 288, 'clip': False,
+    }),
 }
 
 Scenario = namedtuple('Scenario', 'next_fx, params, dr_hashrate, pump_144_threshold')
